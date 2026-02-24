@@ -1,4 +1,5 @@
 import copy
+import random as _random
 import networkx as nx
 
 
@@ -29,6 +30,10 @@ class SNNSimulator:
         dst_beacon_gain=1.0,
         dst_beacon_weight=1.0,
         known_destinations=None,
+        control_broadcast_loss=0.0,
+        control_broadcast_delay=0,
+        control_min_broadcast_period=1,
+        control_rng=None,
     ):
         self.nodes = node_dict
         self.G = physical_graph
@@ -79,6 +84,11 @@ class SNNSimulator:
         self.dst_beacon_gain = dst_beacon_gain
         self.dst_beacon_weight = dst_beacon_weight
         self.known_destinations = set(known_destinations or [])
+        self.control_broadcast_loss = max(0.0, float(control_broadcast_loss))
+        self.control_broadcast_delay = max(0, int(control_broadcast_delay))
+        self.control_min_broadcast_period = max(1, int(control_min_broadcast_period))
+        self._control_rng = control_rng if control_rng is not None else _random
+        self._control_broadcast_queue = []
         self.broadcast_count = 0
         self.next_broadcast_step = {u: 0 for u in self.nodes}
         self.last_broadcast_metric = {u: 0.0 for u in self.nodes}
@@ -207,6 +217,7 @@ class SNNSimulator:
         strength = max(0.0, node.spike_rate_ema + node.S)
         period = int(round(self.event_base_period / max(0.08, strength)))
         period = max(1, min(self.event_max_period, period))
+        period = max(period, self.control_min_broadcast_period)
         return due or triggered, period, metric
 
     def _expire_stale_routes(self, step_k, tables):
@@ -220,55 +231,79 @@ class SNNSimulator:
                 if step_k - self.route_age[u][dest] > self.route_ttl:
                     tables[u][dest] = (None, float("inf"))
 
-    def update_control_plane_event(self, step_k):
-        self.router.update_link_costs(self.G, self.nodes, step_k=step_k)
-        new_tables = copy.deepcopy(self.routing_tables)
+    def _drain_control_broadcast_queue(self, step_k):
+        if not self._control_broadcast_queue:
+            return
 
-        # Remove invalid next hops if physical links disappeared.
+        due = []
+        remain = []
+        for t_apply, src, adv_table in self._control_broadcast_queue:
+            if t_apply <= step_k:
+                due.append((src, adv_table))
+            else:
+                remain.append((t_apply, src, adv_table))
+
+        self._control_broadcast_queue = remain
+        if not due:
+            return
+
+        new_tables = copy.deepcopy(self.routing_tables)
+        for src, adv_table in due:
+            active_neighbors = list(self.G.neighbors(src))
+            for u in active_neighbors:
+                edge_cost = self.router.edge_cost(self.G, self.nodes, u, src)
+                for dest, (b_next, b_dist) in adv_table.items():
+                    if b_dist == float("inf"):
+                        continue
+                    if dest == u:
+                        continue
+                    if b_next == u:
+                        continue
+
+                    new_dist = edge_cost + b_dist
+                    curr_next, curr_dist = new_tables[u][dest]
+                    same_next = curr_next == src
+                    better_enough = new_dist + self.switch_hysteresis < curr_dist
+                    if same_next or curr_next is None or better_enough:
+                        if curr_next != src:
+                            self.table_updates += 1
+                        new_tables[u][dest] = (src, new_dist)
+                        self.route_age[u][dest] = step_k
+
         for u in self.nodes:
             active_neighbors = set(self.G.neighbors(u))
-            for dest, (nxt, _) in self.routing_tables[u].items():
+            for dest in new_tables[u]:
+                nxt, _ = new_tables[u][dest]
                 if nxt is not None and nxt != u and nxt not in active_neighbors:
                     new_tables[u][dest] = (None, float("inf"))
 
+        self.routing_tables = new_tables
+        self._expire_stale_routes(step_k, new_tables)
+
+    def update_control_plane_event(self, step_k):
+        self._drain_control_broadcast_queue(step_k)
+        self.router.update_link_costs(self.G, self.nodes, step_k=step_k)
         broadcasters = []
         for u in self.nodes:
             should, period, metric = self._should_broadcast(u, step_k)
             if should:
                 broadcasters.append((u, metric, period))
 
-        for b, _, _ in broadcasters:
-            adv_table = self.advertised_tables[b]
-            for u in self.G.neighbors(b):
-                edge_cost = self.router.edge_cost(self.G, self.nodes, u, b)
-                for dest, (b_next, b_dist) in adv_table.items():
-                    if dest == u:
-                        continue
-                    if b_next == u:
-                        # Split horizon.
-                        continue
-                    if b_dist == float("inf"):
-                        continue
-
-                    new_dist = edge_cost + b_dist
-                    curr_next, curr_dist = new_tables[u][dest]
-                    same_next = curr_next == b
-                    better_enough = new_dist + self.switch_hysteresis < curr_dist
-
-                    if same_next or curr_next is None or better_enough:
-                        if curr_next != b:
-                            self.table_updates += 1
-                        new_tables[u][dest] = (b, new_dist)
-                        self.route_age[u][dest] = step_k
-
-        self._expire_stale_routes(step_k, new_tables)
-        self.routing_tables = new_tables
-
         for u, metric, period in broadcasters:
-            self.advertised_tables[u] = copy.deepcopy(self.routing_tables[u])
             self.last_broadcast_metric[u] = metric
             self.next_broadcast_step[u] = step_k + period
+
+            if self._control_rng.random() < self.control_broadcast_loss:
+                continue
+
             self.broadcast_count += 1
+            adv_table = copy.deepcopy(self.advertised_tables[u])
+            deliver_step = step_k + self.control_broadcast_delay
+            self._control_broadcast_queue.append((deliver_step, int(u), adv_table))
+
+            self.advertised_tables[u] = copy.deepcopy(self.routing_tables[u])
+
+        self._drain_control_broadcast_queue(step_k)
 
     def _decay_burst_plane(self):
         for recv in self.neighbor_burst_view:
