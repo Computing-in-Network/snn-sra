@@ -42,6 +42,13 @@ python3 scripts_flow/node_hybrid_failure_eval.py \
 - `run_dir/issue15/node15_smoke_20260224_summary.csv`
 - `run_dir/issue15/node15_smoke_20260224_significance.csv`
 
+## 当前结论（Smoke 级别）
+
+- 脚本链路可运行：仿真脚本在最小规模配置下成功跑通，无运行时异常。
+- 输出文件完整：四类 CSV 均成功生成，字段包含恢复指标（`max_drop_pct`/`t50_steps`/`t90_steps`/`auc_recovery`）与统计字段。
+- 结论范围限定：本次为实现与 smoke 验证，**不构成最终论文级结论**，因为尚未覆盖完整矩阵（全部 seed/规模/拓扑组合）。
+- 下一步：完成 Issue #15 全量实验后，在后续 PR 中补充完整结果的定量趋势与显著性结论。
+
 ## 关联文档
 
 1. `issues/0037-issue15-execution.md`
