@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
+config/
 
 # Virtual environments
 .venv
@@ -13,6 +14,7 @@ uv.lock
 .python-version
 
 # local experiment artifacts
+run_dir/
 run_dir/flow_metrics.csv
 run_dir/global_metrics.csv
 run_dir/snn_metrics.csv
