@@ -204,11 +204,23 @@ V(S,t)=\frac{1}{2}\sum_{i\in V} S_i(t)^2
 
 - 主 SNN A/B：`scripts_flow/main_snn.py`
 - 基线对比：`scripts_flow/compare_snn_vs_ospf.py`
+- 路由灰度（无前端，时变拓扑轨迹输入）：`scripts_flow/run_routing_shadow.py`
 - 统计评估：`scripts_flow/paper_stat_eval*.py`
 - 时延分解：`scripts_flow/paper_delay_eval_parallel.py`
 - 消融：`scripts_flow/paper_ablation_eval.py`
 - 开销：`scripts_flow/overhead_eval.py`
 - 稳健性：`scripts_flow/robustness_grid_eval.py`
+
+示例：
+
+```bash
+python scripts_flow/run_routing_shadow.py \
+  --trace /path/to/topology_trace.jsonl \
+  --nodes 300 \
+  --snn-mode snn_event_dv \
+  --out run_dir/routing_shadow_steps.csv \
+  --out-agg run_dir/routing_shadow_summary.csv
+```
 
 ## 9. 模型性质说明
 
